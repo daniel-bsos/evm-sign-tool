@@ -28,6 +28,18 @@ EIP-712 簽名具有實質授權效力。Permit、Permit2 等類型的簽名等�
 
 內嵌 React 18、ethers.js 6.17.0 與 noble 系列密碼學函式庫，無任何 CDN 或外部依賴。無 localStorage、無 cookie、無任何網路傳輸。
 
+## 原始碼與建置
+
+原始碼位於 [`src/`](./src) 目錄，為 React + Vite 專案。根目錄的 `index.html` 即為建置產物。自行建置方式：
+
+```bash
+cd src
+npm install
+npm run build
+```
+
+建置結果輸出於 `src/dist/index.html`，為單一自包含檔案。因打包工具版本差異，自行建置的檔案不會與發布版逐位元相同，發布版的完整性請以 Releases 頁面的 SHA-256 雜湊為準。
+
 ---
 
 # EVM Key Generation & Signing Tool (Demo)
@@ -59,6 +71,18 @@ Verify the SHA-256 checksum of downloaded files against the value published on t
 ## Technical Notes
 
 Bundles React 18, ethers.js 6.17.0, and the noble cryptography libraries. No CDN, no external dependencies, no localStorage, no cookies, no network transmission of any kind.
+
+## Source & Build
+
+Source code lives in [`src/`](./src) as a React + Vite project. The root `index.html` is the built artifact. To build it yourself:
+
+```bash
+cd src
+npm install
+npm run build
+```
+
+The output is a single self-contained file at `src/dist/index.html`. Builds are not byte-reproducible across toolchain versions; verify the released file against the SHA-256 checksum on the Releases page.
 
 ## License
 

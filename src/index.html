@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>EVM 私鑰產製及簽名工具（演示用）</title>
+    <script>
+      // Global error fallback. Uses textContent (never innerHTML) so error
+      // messages can never inject markup into the page.
+      window.onerror = function (m, s, l) {
+        var p = document.createElement('pre');
+        p.style.cssText = 'padding:24px;color:red';
+        p.textContent = 'JS Error: ' + m + '\n' + s + ':' + l;
+        document.body.replaceChildren(p);
+      };
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./main.jsx"></script>
+  </body>
+</html>
