@@ -9,12 +9,278 @@ import {
   PenLine,
   ShieldCheck,
   Upload,
+  Usb,
   X,
 } from 'lucide-react'
 import logoUrl from './assets/bsos-logo.svg'
 
 // 私鑰載入後的存活秒數。倒數歸零即清除記憶體，回到未匯入狀態。
 const AUTO_CLEAR_SECONDS = 100
+
+// ---------------------------------------------------------------------------
+// Ledger（硬體錢包）
+//
+// 只支援預設路徑的第一個帳戶，跟 apps/gateway-web/src/lib/ledger.ts 的
+// DEFAULT_PATH 同一個理由（DF-44）：Ledger Live 與 MetaMask 的路徑標準不同，
+// 完整做法要掃兩種路徑比對帳戶名單，這裡先只做第一個帳戶。
+// ---------------------------------------------------------------------------
+
+const LEDGER_PATH = "44'/60'/0'/0/0"
+
+/**
+ * 這份表格是把 `device-signer-kit-ethereum` 跟 `device-management-kit` 兩包
+ * 編譯後原始碼裡所有 `signer.eth.steps.*`／可能經過的 `os.*.steps.*` 常數
+ * 全部翻出來對出來的，不是挑幾個常見的翻——上一輪漏了 `web3ChecksOptIn`／
+ * `provideGenericContext`／`os.waitForAppAndVersion.*` 就是這樣被漏掉的。
+ * `installOrUpdateApps`／`installLanguagePackage`／`listAppsWithMetadata` 那幾類
+ * 是韌體與 App 目錄管理用的，這個工具的 connect→getAddress→sign 走不到，不翻。
+ */
+const LEDGER_STEP_LABELS = {
+  // signer.eth.steps.*（device-signer-kit-ethereum，完整列表）
+  'signer.eth.steps.openApp': '打開裝置上的 Ethereum app',
+  'signer.eth.steps.getAppConfig': '讀取 app 設定',
+  'signer.eth.steps.getAddress': '取得地址',
+  'signer.eth.steps.buildContext': '準備簽署內容',
+  'signer.eth.steps.buildContexts': '準備簽署內容',
+  'signer.eth.steps.provideContext': '傳送欄位到裝置',
+  'signer.eth.steps.provideContexts': '傳送欄位到裝置',
+  'signer.eth.steps.provideGenericContext': '傳送欄位到裝置',
+  'signer.eth.steps.detectBlindSigning': '檢查是否需要盲簽',
+  'signer.eth.steps.blindSignTransactionFallback': '裝置不支援完整顯示，改用盲簽模式重試',
+  'signer.eth.steps.web3ChecksOptIn': '詢問是否啟用 Web3 Checks（詐騙防護），請在裝置上選擇',
+  'signer.eth.steps.web3ChecksOptInResult': '已收到 Web3 Checks 設定',
+  'signer.eth.steps.parseTransaction': '解析交易內容',
+  'signer.eth.steps.signTransaction': '等待你在裝置上確認並簽署',
+  'signer.eth.steps.signTypedData': '等待你在裝置上確認並簽署',
+  'signer.eth.steps.signTypedDataLegacy': '等待你在裝置上確認並簽署（舊版相容模式）',
+  'signer.eth.steps.signPersonalMessage': '等待你在裝置上確認並簽署',
+  'signer.eth.steps.verifySafeAddress': '核對地址',
+  // getAddress／signMessage 底層是「開 app、再呼叫指令」這個通用殼（CallTaskInAppDeviceAction）
+  'os.callTaskInApp.steps.openApp': '打開裝置上的 Ethereum app',
+  'os.callTaskInApp.steps.callTask': '執行裝置指令',
+  // 每一次 getAddress／sign 內部都會先確認裝置狀態、開對 app，這些是那一段的子步驟
+  'os.getDeviceStatus.steps.onboardCheck': '確認裝置已完成初始化設定',
+  'os.getDeviceStatus.steps.waitForAppAndVersion': '確認目前開啟的 app 與版本',
+  'os.waitForAppAndVersion.steps.unlockDevice': '裝置鎖著，請在裝置上輸入 PIN 解鎖',
+  'os.waitForAppAndVersion.steps.getAppAndVersion': '讀取目前開啟的 app 與版本',
+  'os.openApp.steps.onboardCheck': '確認裝置已完成初始化設定',
+  'os.openApp.steps.listApps': '讀取裝置上已安裝的 app',
+  'os.openApp.steps.getDeviceStatus': '確認目前開啟的 app',
+  'os.openApp.steps.dashboardCheck': '確認裝置是否在主畫面',
+  'os.openApp.steps.confirmOpenApp': '請在裝置上確認開啟 Ethereum app',
+  'os.openApp.steps.closeApp': '正在關閉目前開啟的 app',
+}
+const translateLedgerStep = (step) => LEDGER_STEP_LABELS[step] ?? step
+
+/**
+ * `requiredUserInteraction` 是 SDK 專門用來講「裝置現在要你做什麼」的欄位，
+ * 跟 `step`（內部進度）是兩件事——`step` 在巢狀 device action 裡會借用子動作
+ * 自己的字串（例如 OpenApp 內部跑 GetDeviceStatus 時，`step` 回的是
+ * `os.getDeviceStatus.steps.onboardCheck`，不是 `os.openApp.steps.getDeviceStatus`），
+ * 裝置螢幕跳「Open Ethereum」的當下，畫面對得上的是這個欄位變成
+ * `confirm-open-app`，不是 `step` 換了值。優先看這個欄位。
+ */
+const LEDGER_INTERACTION_LABELS = {
+  'unlock-device': '裝置鎖著，請在裝置上輸入 PIN 解鎖',
+  'allow-secure-connection': '請在裝置上允許建立安全連線',
+  'confirm-open-app': '請在裝置上確認開啟 Ethereum app',
+  'sign-transaction': '請在裝置上核對交易內容並確認簽署',
+  'sign-typed-data': '請在裝置上核對欄位並確認簽署',
+  'sign-personal-message': '請在裝置上核對訊息並確認簽署',
+  'allow-list-apps': '請在裝置上允許讀取已安裝的 app 清單',
+  'verify-address': '請在裝置上核對地址',
+  'sign-delegation-authorization': '請在裝置上確認簽署委任授權',
+  'web3-checks-opt-in': '請在裝置上選擇是否啟用 Web3 Checks（詐騙防護）',
+  'verify-safe-address': '請在裝置上核對 Safe 地址',
+}
+
+// 把一次 device action 的中間狀態轉成一句給人看的中文：能講清楚「現在要你做什麼」
+// 就優先講那個，沒有才退回講「目前跑到哪一步」。
+function describeLedgerProgress(intermediateValue) {
+  const interaction = intermediateValue?.requiredUserInteraction
+  if (interaction && interaction !== 'none' && LEDGER_INTERACTION_LABELS[interaction]) {
+    return LEDGER_INTERACTION_LABELS[interaction]
+  }
+  const step = intermediateValue?.step
+  if (step) return `裝置狀態：${translateLedgerStep(step)}`
+  return null
+}
+
+const hidSupported = () => typeof navigator !== 'undefined' && 'hid' in navigator
+
+// 只有真的按下「連接裝置」才載入這包依賴，沒人用 Ledger 的話一個 byte 都不進來
+let ledgerSdk = null
+async function loadLedgerSdk() {
+  if (ledgerSdk) return ledgerSdk
+  const [
+    { ConsoleLogger, DeviceManagementKitBuilder, DeviceActionStatus },
+    { webHidTransportFactory },
+    { SignerEthBuilder },
+    { ContextModuleBuilder, ContextModuleChainID },
+  ] = await Promise.all([
+    import('@ledgerhq/device-management-kit'),
+    import('@ledgerhq/device-transport-kit-web-hid'),
+    import('@ledgerhq/device-signer-kit-ethereum'),
+    import('@ledgerhq/context-module'),
+  ])
+  const dmk = new DeviceManagementKitBuilder()
+    .addLogger(new ConsoleLogger())
+    .addTransport(webHidTransportFactory)
+    .build()
+  /**
+   * 拿掉兩個 CDN 呼叫，維持這個工具「零網路」的賣點：clear-signing 描述檔是選配的，
+   * struct 定義與欄位值在描述檔判斷之前就已經送進裝置了。typed-data 專用的 loader
+   * 是另一條線，removeDefaultLoaders() 不影響它，得另外補一個永遠回空陣列的假 loader。
+   */
+  const offlineContextModule = new ContextModuleBuilder({})
+    .setChain(ContextModuleChainID.Ethereum)
+    .removeDefaultLoaders()
+    .addTypedDataLoader({ load: async () => [] })
+    .build()
+  ledgerSdk = { dmk, DeviceActionStatus, SignerEthBuilder, offlineContextModule }
+  return ledgerSdk
+}
+
+function runLedgerAction(observable, onProgress) {
+  return new Promise((resolve, reject) => {
+    observable.subscribe({
+      next: (state) => {
+        switch (state.status) {
+          case ledgerSdk.DeviceActionStatus.NotStarted:
+          case ledgerSdk.DeviceActionStatus.Pending: {
+            const text = describeLedgerProgress(state.intermediateValue)
+            if (text) onProgress?.(text)
+            break
+          }
+          case ledgerSdk.DeviceActionStatus.Completed:
+            resolve(state.output)
+            break
+          case ledgerSdk.DeviceActionStatus.Error:
+            reject(state.error)
+            break
+          case ledgerSdk.DeviceActionStatus.Stopped:
+            reject(new Error('操作已取消'))
+            break
+        }
+      },
+      error: reject,
+    })
+  })
+}
+
+/**
+ * Ledger SDK 的錯誤是打了 `_tag` 的物件，不是原生 Error，`err.message`
+ * 常常讀不到有意義的內容。這份表格直接讀套件本身編譯後的原始碼整理
+ * （`node_modules/@ledgerhq/*​/lib/esm`），涵蓋 connect／getAddress／sign
+ * 這條路徑會經過的四個套件（device-management-kit／
+ * device-transport-kit-web-hid／device-signer-kit-ethereum／
+ * context-module）目前版本會丟出的所有 `_tag`——文件沒有把這份清單列全。
+ *
+ * 沒收進來的是 internal/config、internal/manager-api、internal/secure-channel
+ * 那幾類（韌體更新／App 目錄／安全通道金鑰交換），這個工具的
+ * connect→getAddress→sign 這條路不會走到那邊，故意不翻。
+ */
+const LEDGER_TAG_LABELS = {
+  // api/Error.js
+  UnknownDeviceExchangeError: '裝置回應時發生未預期的錯誤，請重新插拔裝置後再試一次。',
+  DeviceBusyError: '裝置正忙碌中，請稍後再試一次。',
+  InvalidArgumentError: '傳給裝置的參數不合法。',
+  // api/command/Errors.js
+  InvalidStatusWordError: '裝置回應的狀態碼無法解析。',
+  InvalidResponseFormatError: '裝置回應的格式不正確。',
+  // api/device-action/os/Errors.js
+  DeviceNotOnboardedError: '這台裝置還沒完成初始化設定（尚未設定 PIN／助記詞）。',
+  DeviceLockedError: '裝置鎖著，請先在裝置上輸入 PIN 解鎖。',
+  UnsupportedFirmwareDAError: '裝置韌體版本不支援這個操作，請更新韌體。',
+  RefusedByUserDAError: '你在裝置上取消了這次操作。',
+  AppAlreadyInstalledDAError: '裝置上已經安裝這個 app。',
+  OutOfMemoryDAError: '裝置空間不足。',
+  UnknownDAError: '發生未知的裝置錯誤。',
+  UnsupportedApplicationDAError: '裝置上目前開啟的 app 不支援這個操作，請確認已開啟 Ethereum app。',
+  MissingLanguagePackagesForOSDAError: '裝置缺少作業系統語言包。',
+  MissingLanguagePackageDAError: '裝置缺少語言包。',
+  DeleteLanguagePackDAError: '刪除裝置語言包失敗。',
+  NetworkDAError: '網路錯誤。',
+  // api/device-action/task/Errors.js
+  InvalidGetFirmwareMetadataResponseError: '讀取裝置韌體資訊失敗。',
+  GetApplicationsMetadataTaskError: '讀取裝置已安裝 app 清單失敗。',
+  // api/apdu/utils/AppBuilderError.js
+  ValueOverflow: '要簽署的內容超過裝置單次可處理的長度上限。',
+  DataOverflow: '要簽署的內容超過裝置單次可處理的長度上限。',
+  HexaString: '要簽署的內容包含無法編碼的欄位。',
+  // api/transport/model/Errors.js（USB／WebHID 這一層）
+  GeneralDmkError: '裝置連線發生錯誤。',
+  DeviceAlreadyDiscoveredError: '已經在掃描這台裝置了。',
+  DeviceNotRecognizedError: '無法辨識這個裝置，請確認接的是 Ledger。',
+  NoAccessibleDeviceError: '找不到可以連接的裝置，請確認 Ledger 已插上且已解鎖。',
+  ConnectionOpeningError: '建立裝置連線失敗，請重新插拔裝置後再試一次。',
+  UnknownDeviceError: '無法辨識這個裝置。',
+  TransportNotSupportedError: '這個瀏覽器不支援 WebHID，請改用 Chrome 或 Edge。',
+  SendApduConcurrencyError: '前一個裝置指令還沒結束，請稍後再試。',
+  SendApduTimeoutError: '裝置沒有在時間內回應，請確認裝置沒有卡在某個畫面。',
+  SendCommandTimeoutError: '裝置沒有在時間內回應，請確認裝置沒有卡在某個畫面。',
+  SendApduEmptyResponseError: '裝置沒有回傳任何內容。',
+  DisconnectError: '中斷裝置連線時發生錯誤。',
+  ReconnectionFailedError: '重新連接裝置失敗，請重新插拔裝置。',
+  DeviceNotInitializedError: '裝置連線尚未就緒。',
+  NoTransportsProvidedError: '沒有可用的連線方式。',
+  TransportAlreadyExistsError: '這種連線方式已經註冊過了。',
+  DeviceDisconnectedWhileSendingError: '傳送指令時裝置斷線了，請重新連接。',
+  AlreadySendingApduError: '前一個指令還在傳送中，請稍後再試。',
+  DeviceDisconnectedBeforeSendingApdu: '裝置在送出指令前就斷線了，請重新連接。',
+  NoTransportProvidedError: '沒有可用的連線方式。',
+  // device-transport-kit-web-hid
+  WebHidTransportNotSupportedError: '這個瀏覽器不支援 WebHID，請改用 Chrome 或 Edge。',
+  WebHidSendReportError: '透過 USB 傳送資料給裝置失敗，請重新插拔裝置。',
+}
+
+/**
+ * device-signer-kit-ethereum：Ethereum app 依 APDU 狀態碼回的錯誤
+ * （`EthAppCommandError.errorCode`），來源是該套件的 `ethAppErrors.js`。
+ */
+const LEDGER_ETH_STATUS_LABELS = {
+  6001: '裝置模式檢查失敗。',
+  6501: '不支援這種交易類型。',
+  6502: 'chainId 轉換時緩衝區不足。',
+  6800: '裝置內部錯誤，請回報。',
+  6982: '你在裝置上取消了這次操作。',
+  6983: '傳送給裝置的資料長度不正確。',
+  6984: '裝置上沒有安裝對應的 plugin。',
+  6985: '裝置回報條件不符（可能是你在裝置上取消了操作）。',
+  '6a00': '裝置回應錯誤，但沒有附帶說明。',
+  '6a80': '傳送給裝置的資料不合法。',
+  '6a84': '裝置記憶體不足。',
+  '6a88': '裝置上找不到對應資料。',
+  '6b00': '傳送給裝置的參數不正確。',
+  '6d00': '裝置不支援這個指令（可能是舊機型或舊版 app）。',
+  '6e00': '裝置回應類別參數不正確。',
+  '6f00': '裝置內部技術性錯誤，請回報。',
+  '911c': '裝置不支援這個指令。',
+}
+
+function explainLedgerError(err) {
+  if (!hidSupported()) return '這個瀏覽器不支援 WebHID，請改用 Chrome 或 Edge。'
+  const tag = err?._tag
+  if (tag === 'EthAppCommandError' && LEDGER_ETH_STATUS_LABELS[err?.errorCode]) {
+    return LEDGER_ETH_STATUS_LABELS[err.errorCode]
+  }
+  if (tag && LEDGER_TAG_LABELS[tag]) return LEDGER_TAG_LABELS[tag]
+  const msg =
+    err?.message ??
+    err?._tag ??
+    err?.errorCode ??
+    (() => {
+      try {
+        return JSON.stringify(err)
+      } catch {
+        return String(err)
+      }
+    })()
+  if (/no device (was )?selected|cancell?ed|noaccessibledevice/i.test(msg)) {
+    return '沒有選擇裝置，或是你在瀏覽器彈窗按了取消。請確認 Ledger 已插上、解鎖，再按一次連接。'
+  }
+  return msg
+}
 
 // ---------------------------------------------------------------------------
 // 密碼強度規則
@@ -263,6 +529,9 @@ function SuccessModal({ fileName, onClose }) {
 // ---------------------------------------------------------------------------
 
 function SignTool() {
+  // 簽名來源：私鑰檔案，或 Ledger 硬體
+  const [source, setSource] = useState('privatekey') // 'privatekey' | 'ledger'
+
   // 私鑰與地址
   const [wallet, setWallet] = useState(null)
   const [address, setAddress] = useState('')
@@ -277,6 +546,18 @@ function SignTool() {
   const [showDecryptPw, setShowDecryptPw] = useState(false)
   const [decryptError, setDecryptError] = useState('')
   const [decrypting, setDecrypting] = useState(false)
+
+  /**
+   * Ledger：dmk/signerEth 不是要 render 的東西，放 ref。
+   * 位址故意跟私鑰那邊的 `address` 分開放──兩個來源切 tab 不會互相斷線
+   * （見 switchSource），共用一個 state 的話，某一邊改了位址會把另一邊蓋掉。
+   */
+  const ledgerRef = useRef({}) // { sessionId, signerEth, cancel }
+  const [ledgerAddress, setLedgerAddress] = useState('')
+  const [ledgerConnecting, setLedgerConnecting] = useState(false)
+  const [ledgerStatus, setLedgerStatus] = useState(null) // { text, cls: 'pending'|'ok'|'err' }
+  const [ledgerSigning, setLedgerSigning] = useState(false)
+  const [ledgerStep, setLedgerStep] = useState('')
 
   // 簽名輸入
   const [mode, setMode] = useState('personal') // 'personal' | 'eip712'
@@ -312,7 +593,71 @@ function SignTool() {
     setDecryptError('')
   }
 
-  // 完整回到未匯入狀態（自動清除用）
+  const ledgerDisconnect = async () => {
+    const { sessionId } = ledgerRef.current
+    ledgerRef.current = {}
+    if (sessionId && ledgerSdk) {
+      await ledgerSdk.dmk.disconnect({ sessionId }).catch(() => {})
+    }
+    setLedgerAddress('')
+    setLedgerStatus(null)
+    clearOutputs()
+  }
+
+  /**
+   * 切 tab 純粹是換畫面，兩邊各自的狀態都不動。私鑰的存活由 AUTO_CLEAR_SECONDS
+   * 那顆倒數計時器管（跟 `wallet` 綁定，不管你在哪個 tab 都照樣倒數），要清有
+   * 「清除」按鈕；Ledger 的連線留給「中斷連接」按鈕管。這裡曾經在切 tab 時
+   * 連帶清掉兩邊的東西，結果是切過去看一眼又切回來，私鑰跟裝置連線都得重來一次
+   * ——把「換頁籤」跟「清掉秘密」這兩件事混成一件事了。
+   */
+  const switchSource = (next) => {
+    if (next === source) return
+    setSignError('')
+    setSource(next)
+  }
+
+  const ledgerConnect = async () => {
+    setLedgerConnecting(true)
+    setLedgerStatus({ text: '連接中，請看瀏覽器裝置選擇器…', cls: 'pending' })
+    let discoverySub
+    try {
+      const { dmk, SignerEthBuilder, offlineContextModule } = await loadLedgerSdk()
+      const device = await new Promise((resolve, reject) => {
+        discoverySub = dmk.startDiscovering({}).subscribe({ next: resolve, error: reject })
+      })
+      discoverySub.unsubscribe()
+      // 裝置已經選好，瀏覽器選擇器已經關了，「請看瀏覽器裝置選擇器」這句話這時候是舊的、不對的，
+      // 這裡到 getAddress 那句狀態文字之間曾經是一段沒有任何提示的空白（使用者反映像卡住的讀取中）
+      setLedgerStatus({ text: '建立連線中…', cls: 'pending' })
+      const sessionId = await dmk.connect({ device })
+      const signerEth = new SignerEthBuilder({ dmk, sessionId })
+        .withContextModule(offlineContextModule)
+        .build()
+      ledgerRef.current = { sessionId, signerEth }
+
+      setLedgerStatus({ text: '向 Ledger 要地址（請確認 Ethereum app 已開啟）…', cls: 'pending' })
+      const { observable } = signerEth.getAddress(LEDGER_PATH)
+      const out = await runLedgerAction(observable, (text) => setLedgerStatus({ text, cls: 'pending' }))
+      setLedgerAddress(out.address)
+      setLedgerStatus({ text: `已連接成功：${out.address}`, cls: 'ok' })
+    } catch (err) {
+      discoverySub?.unsubscribe()
+      if (ledgerRef.current.sessionId) {
+        await ledgerSdk?.dmk.disconnect({ sessionId: ledgerRef.current.sessionId }).catch(() => {})
+      }
+      ledgerRef.current = {}
+      setLedgerStatus({ text: `連接失敗：${explainLedgerError(err)}`, cls: 'err' })
+    } finally {
+      setLedgerConnecting(false)
+    }
+  }
+
+  const cancelLedgerSign = () => {
+    ledgerRef.current.cancel?.()
+  }
+
+  // 完整回到未匯入狀態（自動清除用，只有私鑰那條路會觸發）
   const resetAll = () => {
     clearWallet()
     setMessage('')
@@ -402,9 +747,8 @@ function SignTool() {
     }
   }
 
-  const sign = async () => {
+  const signWithPrivateKey = async () => {
     if (!wallet) return
-    setSignError('')
     try {
       let sig = ''
       if (mode === 'personal') {
@@ -429,12 +773,59 @@ function SignTool() {
     }
   }
 
+  const signWithLedger = async () => {
+    const { signerEth } = ledgerRef.current
+    if (!signerEth) return
+    setLedgerSigning(true)
+    setLedgerStep('')
+    try {
+      let sig
+      if (mode === 'personal') {
+        if (!message) return
+        const { observable, cancel } = signerEth.signMessage(LEDGER_PATH, message)
+        ledgerRef.current.cancel = cancel
+        sig = await runLedgerAction(observable, setLedgerStep)
+      } else {
+        if (!typedData) {
+          setSignError('請先貼上有效的 EIP-712 JSON')
+          return
+        }
+        const { observable, cancel } = signerEth.signTypedData(LEDGER_PATH, typedData)
+        ledgerRef.current.cancel = cancel
+        sig = await runLedgerAction(observable, setLedgerStep)
+      }
+      // sig.r／sig.s 本身就帶 0x 前綴
+      const sigHex = `${sig.r}${sig.s.slice(2)}${sig.v.toString(16).padStart(2, '0')}`
+      setSignature(sigHex)
+      setSignedSource(mode === 'personal' ? message : JSON.stringify(typedData?.message))
+      setSigR(sig.r)
+      setSigS(sig.s)
+      setSigV(String(sig.v))
+    } catch (err) {
+      setSignError(explainLedgerError(err))
+    } finally {
+      setLedgerSigning(false)
+      setLedgerStep('')
+      ledgerRef.current.cancel = null
+    }
+  }
+
+  const sign = () => {
+    setSignError('')
+    return source === 'privatekey' ? signWithPrivateKey() : signWithLedger()
+  }
+
+  const hasSigner = source === 'privatekey' ? !!wallet : !!ledgerAddress
   const isStale =
     !!signature &&
     (mode === 'personal'
       ? message === signedSource
       : JSON.stringify(typedData?.message) === signedSource)
-  const canSign = !!wallet && (mode === 'personal' ? !!message : !!typedData) && !isStale
+  const canSign =
+    hasSigner &&
+    (mode === 'personal' ? !!message : !!typedData) &&
+    !isStale &&
+    !(source === 'ledger' && ledgerSigning)
   const inputEdited = !!signature && !isStale
 
   return (
@@ -442,7 +833,32 @@ function SignTool() {
       {showGenerate && <GenerateModal onGenerated={onGenerated} onClose={() => setShowGenerate(false)} />}
       {generatedFile && <SuccessModal fileName={generatedFile} onClose={() => setGeneratedFile(null)} />}
       <div className="space-y-4">
-        {/* 私鑰區 */}
+        {/* 簽名來源 */}
+        <div className="flex items-center gap-4">
+          <span className="text-slate-700 font-medium" style={{ fontSize: '0.9rem' }}>
+            簽名來源
+          </span>
+          <div className="flex rounded-lg overflow-hidden border border-slate-300" style={{ fontSize: '0.85rem' }}>
+            <button
+              onClick={() => switchSource('privatekey')}
+              className={`px-4 py-1.5 transition-colors ${
+                source === 'privatekey' ? 'bg-slate-800 text-white' : 'bg-white text-slate-500 hover:bg-slate-50'
+              }`}
+            >
+              私鑰檔案
+            </button>
+            <button
+              onClick={() => switchSource('ledger')}
+              className={`px-4 py-1.5 transition-colors border-l border-slate-300 ${
+                source === 'ledger' ? 'bg-slate-800 text-white' : 'bg-white text-slate-500 hover:bg-slate-50'
+              }`}
+            >
+              Ledger
+            </button>
+          </div>
+        </div>
+
+        {source === 'privatekey' && (
         <div className="space-y-3">
           <div className="flex items-center justify-between">
             <label className="text-slate-700 font-medium" style={{ fontSize: '0.9rem' }}>
@@ -547,6 +963,65 @@ function SignTool() {
 
           {wallet && <Field label="Address" value={address} />}
         </div>
+        )}
+
+        {source === 'ledger' && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <label className="text-slate-700 font-medium" style={{ fontSize: '0.9rem' }}>
+              Ledger 裝置
+            </label>
+            {ledgerAddress ? (
+              <div className="flex items-center gap-2">
+                <span className="text-green-600 font-medium" style={{ fontSize: '0.82rem' }}>
+                  ✓ 已連接
+                </span>
+                <button
+                  onClick={ledgerDisconnect}
+                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-slate-700 transition-colors"
+                  style={{ fontSize: '0.82rem' }}
+                >
+                  <X size={14} />
+                  中斷連接
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={ledgerConnect}
+                disabled={ledgerConnecting || !hidSupported()}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-500 text-white hover:bg-blue-400 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                style={{ fontSize: '0.85rem' }}
+              >
+                <Usb size={15} />
+                {ledgerConnecting ? '連接中…' : '連接裝置'}
+              </button>
+            )}
+          </div>
+
+          {!hidSupported() && (
+            <p className="text-amber-600" style={{ fontSize: '0.82rem' }}>
+              這個瀏覽器不支援 WebHID，請改用 Chrome 或 Edge。
+            </p>
+          )}
+
+          {ledgerStatus && (
+            <p
+              className={
+                ledgerStatus.cls === 'ok'
+                  ? 'text-green-600'
+                  : ledgerStatus.cls === 'err'
+                    ? 'text-red-500'
+                    : 'text-amber-600'
+              }
+              style={{ fontSize: '0.82rem' }}
+            >
+              {ledgerStatus.text}
+            </p>
+          )}
+
+          {ledgerAddress && <Field label="Address" value={ledgerAddress} />}
+        </div>
+        )}
 
         <div className="border-t border-slate-200" />
 
@@ -667,15 +1142,31 @@ function SignTool() {
           </p>
         )}
 
-        <button
-          onClick={sign}
-          disabled={!canSign}
-          className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors font-medium"
-          style={{ fontSize: '1rem' }}
-        >
-          <PenLine size={18} />
-          簽名
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={sign}
+            disabled={!canSign}
+            className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors font-medium"
+            style={{ fontSize: '1rem' }}
+          >
+            <PenLine size={18} />
+            簽名
+          </button>
+          {source === 'ledger' && ledgerSigning && (
+            <>
+              <span className="text-amber-600" style={{ fontSize: '0.85rem' }}>
+                {ledgerStep || '已送出到裝置，請在 Ledger 上核對並確認…'}
+              </span>
+              <button
+                onClick={cancelLedgerSign}
+                className="text-slate-400 hover:text-slate-600 underline underline-offset-2"
+                style={{ fontSize: '0.82rem' }}
+              >
+                取消
+              </button>
+            </>
+          )}
+        </div>
 
         {signature && (
           <div className="space-y-2">

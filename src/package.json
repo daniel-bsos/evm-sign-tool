@@ -10,6 +10,10 @@
     "build": "vite build"
   },
   "dependencies": {
+    "@ledgerhq/context-module": "2.5.0",
+    "@ledgerhq/device-management-kit": "1.9.0",
+    "@ledgerhq/device-signer-kit-ethereum": "1.18.0",
+    "@ledgerhq/device-transport-kit-web-hid": "1.2.4",
     "ethers": "6.17.0",
     "lucide-react": "0.487.0",
     "react": "^18.3.1",
