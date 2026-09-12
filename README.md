@@ -1,3 +1,5 @@
+**繁體中文** | **[English](README.en.md)**
+
 # EVM 私鑰產製及簽名工具（演示用）
 
 單一 HTML 檔的 EVM 私鑰產製與訊息簽名工具。所有密碼學運算均在瀏覽器本地執行，全程零網路請求，私鑰不會離開您的裝置。本專案以 MIT 授權開源，原始碼公開供任何人自由檢視、使用與修改。
@@ -9,6 +11,7 @@
 - 一般訊息簽名（EIP-191 personal_sign）
 - EIP-712 typed data 簽名，含 domain 解析預覽
 - 私鑰載入後 100 秒自動清除，回到未匯入狀態
+- 支援連接 Ledger 硬體錢包（WebHID）簽署 EIP-191 與 EIP-712，私鑰不經過瀏覽器，全程留在裝置上
 
 ## 使用方式
 
@@ -22,11 +25,15 @@ EIP-712 簽名具有實質授權效力。Permit、Permit2 等類型的簽名等�
 
 建議在離線環境或乾淨的瀏覽器 profile 中使用。瀏覽器擴充功能具有讀取頁面記憶體的能力。
 
+以私鑰檔案簽名時，解密後的私鑰會短暫留在瀏覽器記憶體中（見上方自動清除機制）；透過 Ledger 簽名則私鑰全程留在硬體裝置內，不會進入瀏覽器。兩種方式的信任等級不同，請依實際需求選擇。
+
 下載後可比對 SHA-256 雜湊以確認檔案未遭修改，最新雜湊值公布於 Releases 頁面。
 
 ## 技術說明
 
 內嵌 React 18、ethers.js 6.17.0 與 noble 系列密碼學函式庫，無任何 CDN 或外部依賴。無 localStorage、無 cookie、無任何網路傳輸。
+
+連接 Ledger 時另外動態載入 `@ledgerhq/device-management-kit` 等四個套件，僅在使用者主動按下連接時才載入，沒用到 Ledger 功能就不會下載。WebHID 僅桌面版 Chrome 89+、Edge 89+、Opera 76+ 支援，Firefox、Safari 與所有行動瀏覽器均不支援。
 
 ## 原始碼與建置
 
@@ -39,50 +46,6 @@ npm run build
 ```
 
 建置結果輸出於 `src/dist/index.html`，為單一自包含檔案。因打包工具版本差異，自行建置的檔案不會與發布版逐位元相同，發布版的完整性請以 Releases 頁面的 SHA-256 雜湊為準。
-
----
-
-# EVM Key Generation & Signing Tool (Demo)
-
-A single-file HTML tool for EVM private key generation and message signing. All cryptographic operations run locally in your browser with zero network requests. Your private key never leaves your device. Open-sourced under the MIT License.
-
-## Features
-
-- Random key generation (BIP-39, 128-bit entropy via `crypto.getRandomValues`)
-- Password-encrypted Keystore JSON export (scrypt N=131072) and re-import
-- Personal message signing (EIP-191)
-- EIP-712 typed data signing with domain preview
-- Auto-clear: the loaded key is wiped from memory after 100 seconds
-
-## Usage
-
-Download `index.html` and open it in a browser. No installation or network connection required.
-
-## Security Notes
-
-This tool is intended for demonstration and testing. Do not use it with keys holding mainnet assets.
-
-EIP-712 signatures carry real authorization power. Permit-style signatures can authorize asset transfers offline. Verify the source of any JSON before signing.
-
-Use offline or in a clean browser profile. Browser extensions can read page memory.
-
-Verify the SHA-256 checksum of downloaded files against the value published on the Releases page.
-
-## Technical Notes
-
-Bundles React 18, ethers.js 6.17.0, and the noble cryptography libraries. No CDN, no external dependencies, no localStorage, no cookies, no network transmission of any kind.
-
-## Source & Build
-
-Source code lives in [`src/`](./src) as a React + Vite project. The root `index.html` is the built artifact. To build it yourself:
-
-```bash
-cd src
-npm install
-npm run build
-```
-
-The output is a single self-contained file at `src/dist/index.html`. Builds are not byte-reproducible across toolchain versions; verify the released file against the SHA-256 checksum on the Releases page.
 
 ## License
 
